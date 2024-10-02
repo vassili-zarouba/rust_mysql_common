@@ -15,6 +15,7 @@ use std::{
     marker::PhantomData,
     str::{from_utf8, Utf8Error},
 };
+use std::io::Error;
 
 use crate::{
     constants::ColumnType,
@@ -25,6 +26,7 @@ use crate::{
     },
     proto::{MyDeserialize, MySerialize},
 };
+use crate::binlog::{decimal, misc};
 
 impl fmt::Debug for Value<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -557,6 +559,93 @@ impl<'a> Value<'a> {
     }
 }
 
+fn time_packed_from_binary(data: &[u8]) -> i64 {
+    macro_rules! from_bytes {
+        ($slice:expr) => {
+            if cfg!(target_endian = "little") {
+                u64::from_le_bytes($slice) as i64
+            } else if cfg!(target_endian = "big") {
+                u64::from_be_bytes($slice) as i64
+            } else {
+                panic!("Unknown endianness.");
+            }
+        };
+    }
+
+    let len = data.len();
+    if len == 8 {
+        from_bytes!(data.try_into().unwrap())
+    } else {
+        let mut bytes = [0u8; 8];
+        bytes[..len].copy_from_slice(&data[..len]);
+        from_bytes!(bytes)
+    }
+}
+
+fn string_to_serde_value(s: &str) -> Result<serde_json::Value, JsonbToJsonError> {
+    serde_json::from_str::<serde_json::Value>(s)
+        .map_err(|e| JsonbToJsonError::InvalidJsonb(Error::from(e)))
+}
+
+fn time_binary_to_serde_value(
+    data: &[u8],
+    temporal_from_packed_func: fn(i64) -> crate::Value,
+) -> Result<serde_json::Value, JsonbToJsonError> {
+
+    let packed = time_packed_from_binary(data);
+    let val = temporal_from_packed_func(packed);
+
+    let str_val = match val {
+        crate::Value::Date(y, m, d, 0, 0, 0, 0) => format!("\"{:04}-{:02}-{:02}\"", y, m, d),
+        crate::Value::Date(year, month, day, hour, minute, second, micros) => format!(
+            "\"{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}\"",
+            year, month, day, hour, minute, second, micros
+        ),
+        crate::Value::Time(neg, d, h, i, s, u) => {
+            assert_eq!(d, 0);
+            if neg {
+                format!("\"-{:02}:{:02}:{:02}.{:06}\"", u32::from(h), i, s, u)
+            } else {
+                format!("\"{:02}:{:02}:{:02}.{:06}\"", u32::from(h), i, s, u)
+            }
+        }
+        _ => val.as_sql(true),
+    };
+
+    string_to_serde_value(&str_val[..])
+}
+
+impl<'a> TryFrom<OpaqueValue<'a>> for serde_json::Value {
+    type Error = JsonbToJsonError;
+
+    fn try_from(value: OpaqueValue<'a>) -> Result<Self, Self::Error> {
+        match value.value_type() {
+            ColumnType::MYSQL_TYPE_NEWDECIMAL => {
+                let data = value.data_raw();
+                let decimal = decimal::Decimal::read_bin(
+                    &data[2..],
+                    data[0] as usize,
+                    data[1] as usize,
+                    false,
+                )?;
+                string_to_serde_value(&decimal.to_string())
+            }
+
+            ColumnType::MYSQL_TYPE_TIME => {
+                time_binary_to_serde_value(value.data_raw(), misc::time_from_packed)
+            }
+
+            ColumnType::MYSQL_TYPE_DATETIME
+            | ColumnType::MYSQL_TYPE_TIMESTAMP
+            | ColumnType::MYSQL_TYPE_DATE => {
+                time_binary_to_serde_value(value.data_raw(), misc::datetime_from_packed)
+            }
+
+            _ => Err(Self::Error::Opaque),
+        }
+    }
+}
+
 impl<'a> TryFrom<Value<'a>> for serde_json::Value {
     type Error = JsonbToJsonError;
 
@@ -576,7 +665,7 @@ impl<'a> TryFrom<Value<'a>> for serde_json::Value {
             Value::LargeArray(x) => x.try_into(),
             Value::SmallObject(x) => x.try_into(),
             Value::LargeObject(x) => x.try_into(),
-            Value::Opaque(_) => Err(Self::Error::Opaque),
+            Value::Opaque(x) => x.try_into(),
         }
     }
 }
