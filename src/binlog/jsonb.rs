@@ -8,6 +8,7 @@
 
 //! MySql internal binary JSON representation.
 
+use std::io::Error;
 use std::{
     borrow::Cow,
     convert::{TryFrom, TryInto},
@@ -15,8 +16,8 @@ use std::{
     marker::PhantomData,
     str::{from_utf8, Utf8Error},
 };
-use std::io::Error;
 
+use crate::binlog::{decimal, misc};
 use crate::{
     constants::ColumnType,
     io::ParseBuf,
@@ -26,7 +27,6 @@ use crate::{
     },
     proto::{MyDeserialize, MySerialize},
 };
-use crate::binlog::{decimal, misc};
 
 impl fmt::Debug for Value<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -591,7 +591,6 @@ fn time_binary_to_serde_value(
     data: &[u8],
     temporal_from_packed_func: fn(i64) -> crate::Value,
 ) -> Result<serde_json::Value, JsonbToJsonError> {
-
     let packed = time_packed_from_binary(data);
     let val = temporal_from_packed_func(packed);
 

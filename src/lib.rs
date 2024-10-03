@@ -654,6 +654,7 @@ fn from_value_is_integer() {
 
 #[cfg(test)]
 mod tests {
+    use crate::binlog::jsonb::OpaqueValue;
     use crate::{
         constants::ColumnType,
         packets::Column,
@@ -661,6 +662,7 @@ mod tests {
         value::{convert::from_value, Value},
         FromValueError,
     };
+    use std::convert::TryFrom;
     use unic_langid::LanguageIdentifier;
 
     #[derive(FromValue)]
@@ -772,5 +774,36 @@ mod tests {
             "[true,false,\"not found\"]"
         );
         assert!(deserialized.custom_bool);
+    }
+
+    #[test]
+    fn json_opaque_values() {
+        let v = serde_json::value::Value::try_from(OpaqueValue::new(
+            ColumnType::MYSQL_TYPE_NEWDECIMAL,
+            vec![4, 2, 152, 99],
+        ))
+        .unwrap();
+        assert_eq!(v.to_string(), "24.99".to_string());
+
+        let v = serde_json::value::Value::try_from(OpaqueValue::new(
+            ColumnType::MYSQL_TYPE_DATE,
+            vec![0, 0, 0, 0, 0, 132, 180, 25],
+        ))
+        .unwrap();
+        assert_eq!(v.to_string(), "\"2024-10-02\"".to_string());
+
+        let v = serde_json::value::Value::try_from(OpaqueValue::new(
+            ColumnType::MYSQL_TYPE_DATETIME,
+            vec![0, 0, 0, 251, 126, 63, 181, 25],
+        ))
+        .unwrap();
+        assert_eq!(v.to_string(), "\"2024-12-31 23:59:59.000000\"".to_string());
+
+        let v = serde_json::value::Value::try_from(OpaqueValue::new(
+            ColumnType::MYSQL_TYPE_TIME,
+            vec![0, 0, 0, 76, 100, 1, 0, 0],
+        ))
+        .unwrap();
+        assert_eq!(v.to_string(), "\"22:17:12.000000\"".to_string());
     }
 }
